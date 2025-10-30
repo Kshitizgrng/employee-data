@@ -138,20 +138,29 @@ if uploaded is not None:
         st.error(f"Could not read the Excel file: {e}")
         st.stop()
 
+# --- Map columns and add missing ones automatically
 col_map = auto_map_columns(df_raw.columns.tolist())
-missing = [c for c in REQUIRED_COLUMNS_CANON.keys() if c not in col_map]
-if missing:
-    st.error(f"Missing required columns: {', '.join(missing)}")
-    st.stop()
-
 df = df_raw.rename(columns={orig: canon for canon, orig in col_map.items()})
+
+# Fill any missing required columns with NaN or 0
+for col in REQUIRED_COLUMNS_CANON.keys():
+    if col not in df.columns:
+        df[col] = np.nan
+        st.warning(f"Column '{col}' was missing and has been added as blank.")
+
+# Convert and compute columns
 df["date_joined"] = pd.to_datetime(df["date_joined"], errors="coerce")
 
 for col in NUMERIC_COLS:
     df[col] = df[col].apply(to_number)
 
+# Auto-calculate tenure if missing
 if df["years_of_service"].isna().all() or (df["years_of_service"].median(skipna=True) <= 0.01):
     df["years_of_service"] = df["date_joined"].apply(calc_years_from_date)
+
+# If total_bonus missing, use bonus_paid
+if df["total_bonus"].isna().all() and "bonus_paid" in df.columns:
+    df["total_bonus"] = df["bonus_paid"]
 
 df["full_name"] = (df["first_name"].fillna("") + " " + df["last_name"].fillna("")).str.strip()
 df["total_comp"] = df[["salary", "bonus_paid", "overtime_paid"]].sum(axis=1, min_count=1)
@@ -253,5 +262,6 @@ st.download_button("Download Excel", xlsx_bytes, file_name="filtered.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption("All charts and tables reflect the current filters and search query.")
+
 
 
