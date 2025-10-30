@@ -1,6 +1,6 @@
 import io
-import math
-from datetime import datetime, date
+import os
+from datetime import date
 from typing import Dict, List
 
 import numpy as np
@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("📊 People Analytics – Payroll & Headcount Dashboard")
-st.caption("Upload your Excel file (`01-Employee Database- Original.xlsx`) with the columns described. "
+st.caption("Upload or auto-load your Excel file (`01-Employee Database- Original.xlsx`). "
            "The app automatically cleans header spacing and casing.")
 
 # ----------------------- Helpers --------------------------
@@ -44,30 +44,28 @@ NUMERIC_COLS = [
     "salary", "bonus_paid", "overtime_paid", "total_bonus"
 ]
 
+
 def normalize(s: str) -> str:
     if s is None:
         return ""
     s = s.strip().lower()
-    s = " ".join(s.split())
-    return s
+    return " ".join(s.split())
+
 
 def auto_map_columns(cols: List[str]) -> Dict[str, str]:
     raw_norm = {c: normalize(c) for c in cols}
     mapping = {}
     used = set()
-
     for canon, aliases in REQUIRED_COLUMNS_CANON.items():
-        matched = None
         for raw, norm in raw_norm.items():
             if raw in used:
                 continue
             if norm in [normalize(a) for a in aliases]:
-                matched = raw
+                mapping[canon] = raw
+                used.add(raw)
                 break
-        if matched is not None:
-            mapping[canon] = matched
-            used.add(matched)
     return mapping
+
 
 def to_number(s):
     if pd.isna(s):
@@ -79,6 +77,7 @@ def to_number(s):
     except Exception:
         return np.nan
 
+
 def excel_download(df: pd.DataFrame, filename: str = "export.xlsx") -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -89,6 +88,7 @@ def excel_download(df: pd.DataFrame, filename: str = "export.xlsx") -> bytes:
             worksheet.set_column(i, i, max_len + 2)
     return output.getvalue()
 
+
 def calc_years_from_date(date_joined: pd.Timestamp) -> float:
     if pd.isna(date_joined):
         return np.nan
@@ -96,53 +96,52 @@ def calc_years_from_date(date_joined: pd.Timestamp) -> float:
     delta = (today - date_joined).days
     return round(delta / 365.25, 2)
 
+
 def zscore(series: pd.Series) -> pd.Series:
     s = pd.to_numeric(series, errors="coerce")
     return (s - s.mean()) / s.std(ddof=0)
 
+
 # ----------------------- Sidebar --------------------------
 st.sidebar.header("⚙️ Controls")
 
-template_df = pd.DataFrame(
-    {k: [] for k in [
-        "Employee  ID","First  Name","Last  Name","Division","Department","Date  Joined",
-        "Employment Status","Years of  Service","Email","Hourly  Rate","Bonus Rate","Salary",
-        "Bonus Paid","Overtime  Paid","total bonus"
-    ]}
-)
-template_bytes = excel_download(template_df)
-st.sidebar.download_button("Download empty template (.xlsx)", template_bytes, file_name="template.xlsx")
+DEFAULT_FILE = "01-Employee Database- Original.xlsx"
+uploaded = None
+df_raw = None
 
-uploaded = st.sidebar.file_uploader(
-    "📤 Upload your Excel file (01-Employee Database- Original.xlsx)",
-    type=["xlsx", "xls"]
-)
+# Auto-load if file exists in repo
+if os.path.exists(DEFAULT_FILE):
+    try:
+        df_raw = pd.read_excel(DEFAULT_FILE, dtype=str)
+        st.sidebar.success(f"Auto-loaded `{DEFAULT_FILE}` from repository ✅")
+    except Exception as e:
+        st.sidebar.error(f"Error reading default file: {e}")
+else:
+    uploaded = st.sidebar.file_uploader(
+        "📤 Upload your Excel file (01-Employee Database- Original.xlsx)",
+        type=["xlsx", "xls"]
+    )
 
 st.sidebar.markdown("---")
 search_q = st.sidebar.text_input("🔎 Search name/email/department", "")
-st.sidebar.caption("Tip: Type partial matches, e.g. `mar` will match *Mark*, *Martha*, etc.")
+st.sidebar.caption("Tip: Type partial matches, e.g. `mar` → Mark, Martha, etc.")
 
 # ----------------------- Load / Clean ----------------------
-if uploaded is None:
-    st.info("Please upload `01-Employee Database- Original.xlsx` to begin. "
-            "You can rename your file, but keep the same column layout.")
+if df_raw is None and uploaded is None:
+    st.info("Please upload or include `01-Employee Database- Original.xlsx` to begin.")
     st.stop()
 
-try:
-    df_raw = pd.read_excel(uploaded, dtype=str)
-except Exception as e:
-    st.error(f"Could not read the Excel file: {e}")
-    st.stop()
+if uploaded is not None:
+    try:
+        df_raw = pd.read_excel(uploaded, dtype=str)
+    except Exception as e:
+        st.error(f"Could not read the Excel file: {e}")
+        st.stop()
 
 col_map = auto_map_columns(df_raw.columns.tolist())
-
 missing = [c for c in REQUIRED_COLUMNS_CANON.keys() if c not in col_map]
 if missing:
-    with st.expander("❗ Column mapping issues (click for details)"):
-        st.write("Missing required columns:")
-        st.write(", ".join(missing))
-        st.write("Original columns detected:", list(df_raw.columns))
-    st.error("Fix column names (or download the template) and re-upload.")
+    st.error(f"Missing required columns: {', '.join(missing)}")
     st.stop()
 
 df = df_raw.rename(columns={orig: canon for canon, orig in col_map.items()})
@@ -158,18 +157,18 @@ df["full_name"] = (df["first_name"].fillna("") + " " + df["last_name"].fillna(""
 df["total_comp"] = df[["salary", "bonus_paid", "overtime_paid"]].sum(axis=1, min_count=1)
 
 # ----------------------- Filters --------------------------
-divisions = sorted([d for d in df["division"].dropna().unique() if str(d).strip() != ""])
-departments = sorted([d for d in df["department"].dropna().unique() if str(d).strip() != ""])
-statuses = sorted([s for s in df["employment_status"].dropna().unique() if str(s).strip() != ""])
+divisions = sorted(df["division"].dropna().unique())
+departments = sorted(df["department"].dropna().unique())
+statuses = sorted(df["employment_status"].dropna().unique())
 
 sel_div = st.multiselect("Division filter", options=divisions, default=divisions)
 sel_dept = st.multiselect("Department filter", options=departments, default=departments)
 sel_status = st.multiselect("Employment Status filter", options=statuses, default=statuses)
 
-q = normalize(search_q)
 mask = df["division"].isin(sel_div) & df["department"].isin(sel_dept) & df["employment_status"].isin(sel_status)
+q = normalize(search_q)
 if q:
-    mask = mask & (
+    mask &= (
         df["full_name"].str.lower().str.contains(q, na=False)
         | df["email"].str.lower().str.contains(q, na=False)
         | df["department"].str.lower().str.contains(q, na=False)
@@ -180,7 +179,6 @@ df_f = df.loc[mask].copy()
 
 # ----------------------- KPIs -----------------------------
 c1, c2, c3, c4 = st.columns(4)
-
 headcount = int(df_f["employee_id"].nunique())
 avg_tenure = round(df_f["years_of_service"].mean(skipna=True), 2) if headcount else 0.0
 active_ratio = df_f["employment_status"].str.lower().eq("active").mean() if headcount else 0.0
@@ -195,44 +193,24 @@ c4.metric("Total Payroll (Salary + Bonus + OT)", f"${total_payroll:,.0f}")
 st.subheader("📈 Visuals")
 
 left, right = st.columns(2)
-
 with left:
-    grp_div = df_f.groupby("division", dropna=False)["employee_id"].nunique().reset_index(name="headcount")
-    chart_div = alt.Chart(grp_div).mark_bar().encode(
-        x=alt.X("headcount:Q", title="Headcount"),
-        y=alt.Y("division:N", sort="-x", title="Division"),
-        tooltip=["division", "headcount"]
+    grp_div = df_f.groupby("division")["employee_id"].nunique().reset_index(name="headcount")
+    st.altair_chart(
+        alt.Chart(grp_div).mark_bar().encode(
+            x="headcount:Q", y=alt.Y("division:N", sort="-x"), tooltip=["division", "headcount"]
+        ),
+        use_container_width=True,
     )
-    st.altair_chart(chart_div, use_container_width=True)
 
 with right:
-    payroll_dept = df_f.groupby("department", dropna=False)["total_comp"].sum().reset_index()
-    chart_payroll = alt.Chart(payroll_dept).mark_bar().encode(
-        x=alt.X("total_comp:Q", title="Total Payroll"),
-        y=alt.Y("department:N", sort="-x", title="Department"),
-        tooltip=["department", alt.Tooltip("total_comp:Q", format="$.2f")]
+    payroll_dept = df_f.groupby("department")["total_comp"].sum().reset_index()
+    st.altair_chart(
+        alt.Chart(payroll_dept).mark_bar().encode(
+            x="total_comp:Q", y=alt.Y("department:N", sort="-x"),
+            tooltip=["department", alt.Tooltip("total_comp:Q", format="$.2f")]
+        ),
+        use_container_width=True,
     )
-    st.altair_chart(chart_payroll, use_container_width=True)
-
-left2, right2 = st.columns(2)
-
-with left2:
-    tenure_hist = alt.Chart(df_f.dropna(subset=["years_of_service"])).mark_bar().encode(
-        x=alt.X("years_of_service:Q", bin=alt.Bin(maxbins=20), title="Years of Service"),
-        y=alt.Y("count()", title="Employees"),
-        tooltip=[alt.Tooltip("count()", title="Employees")]
-    )
-    st.altair_chart(tenure_hist, use_container_width=True)
-
-with right2:
-    status_counts = df_f["employment_status"].fillna("Unknown").value_counts().reset_index()
-    status_counts.columns = ["employment_status", "count"]
-    donut = alt.Chart(status_counts).mark_arc(innerRadius=60).encode(
-        theta="count:Q",
-        color=alt.Color("employment_status:N", legend=alt.Legend(title="Status")),
-        tooltip=["employment_status", "count"]
-    )
-    st.altair_chart(donut, use_container_width=True)
 
 # ----------------------- Data Quality ---------------------
 st.subheader("🕵️ Data Quality")
@@ -240,67 +218,40 @@ st.subheader("🕵️ Data Quality")
 issues = []
 for col in ["employee_id", "first_name", "last_name", "division", "department", "employment_status", "salary"]:
     n_miss = df_f[col].isna().sum()
-    if n_miss > 0:
+    if n_miss:
         issues.append(f"Missing `{col}`: {n_miss} rows")
 
 for col in ["salary", "bonus_paid", "overtime_paid", "hourly_rate", "bonus_rate", "total_bonus"]:
     n_neg = (df_f[col] < 0).sum(skipna=True)
-    if n_neg > 0:
-        issues.append(f"Negative values in `{col}`: {int(n_neg)} rows")
-
-if not df_f.empty:
-    df_out = df_f.copy()
-    df_out["salary_z"] = df_out.groupby("division")["salary"].transform(zscore)
-    flagged = df_out[abs(df_out["salary_z"]) >= 3].sort_values("salary_z", ascending=False)
-    if not flagged.empty:
-        with st.expander("⚠️ Salary outliers (|z| ≥ 3)"):
-            st.dataframe(flagged[["employee_id", "full_name", "division", "department", "salary", "salary_z"]], use_container_width=True)
-    else:
-        st.caption("No extreme salary outliers detected.")
+    if n_neg:
+        issues.append(f"Negative values in `{col}`: {n_neg} rows")
 
 if issues:
     st.warning("Potential issues detected:")
     for i in issues:
-        st.write("- " + i)
+        st.write("•", i)
 else:
-    st.success("No obvious data quality issues detected.")
+    st.success("No obvious data issues detected.")
 
-# ----------------------- Pivots & Table -------------------
-st.subheader("📑 Pivots & Table")
-
-pivot_type = st.selectbox("Pivot preset", ["Headcount by Division/Department", "Payroll by Division/Department", "None"])
-
-if pivot_type == "Headcount by Division/Department":
-    pivot = pd.pivot_table(df_f, index="division", columns="department",
-                           values="employee_id", aggfunc=pd.Series.nunique, fill_value=0)
-    st.dataframe(pivot, use_container_width=True)
-    st.download_button("Download pivot (CSV)", pivot.to_csv().encode("utf-8"), file_name="pivot_headcount.csv", mime="text/csv")
-
-elif pivot_type == "Payroll by Division/Department":
-    pivot = pd.pivot_table(df_f, index="division", columns="department",
-                           values="total_comp", aggfunc="sum", fill_value=0)
-    st.dataframe(pivot.style.format("${:,.0f}"), use_container_width=True)
-    st.download_button("Download pivot (CSV)", pivot.to_csv().encode("utf-8"), file_name="pivot_payroll.csv", mime="text/csv")
-
+# ----------------------- Data Table -----------------------
+st.subheader("📑 Employee Data")
 st.dataframe(
     df_f[
-        ["employee_id","full_name","email","division","department","employment_status",
-         "date_joined","years_of_service","salary","bonus_paid","overtime_paid",
-         "bonus_rate","hourly_rate","total_bonus","total_comp"]
-    ].sort_values(["division","department","full_name"], na_position="last"),
+        ["employee_id", "full_name", "email", "division", "department", "employment_status",
+         "date_joined", "years_of_service", "salary", "bonus_paid", "overtime_paid",
+         "bonus_rate", "hourly_rate", "total_bonus", "total_comp"]
+    ].sort_values(["division", "department", "full_name"], na_position="last"),
     use_container_width=True,
 )
 
 # ----------------------- Exports --------------------------
 st.subheader("⬇️ Export")
-colx, coly = st.columns(2)
-
 csv_bytes = df_f.to_csv(index=False).encode("utf-8")
-colx.download_button("Download filtered data (CSV)", csv_bytes, file_name="filtered.csv", mime="text/csv")
-
+st.download_button("Download CSV", csv_bytes, file_name="filtered.csv", mime="text/csv")
 xlsx_bytes = excel_download(df_f)
-coly.download_button("Download filtered data (Excel)", xlsx_bytes, file_name="filtered.xlsx",
-                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.download_button("Download Excel", xlsx_bytes, file_name="filtered.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("All charts/tables reflect your current filters and search.")
+st.caption("All charts and tables reflect the current filters and search query.")
+
 
