@@ -379,15 +379,18 @@ with tab_quality:
         n_neg = (df_f[col] < 0).sum(skipna=True)
         if n_neg:
             issues.append(f"Negative values in `{col}`: {n_neg} rows")
+
     if issues:
         st.warning("Potential issues detected:")
         for i in issues:
             st.write("•", i)
     else:
-        st.success("No obvious data issues detected.")
+        st.caption("No obvious data issues detected.")
+
     outliers = df_f[(df_f["salary_z"].abs() >= 2.5) | (df_f["totalcomp_z"].abs() >= 2.5)][
         ["employee_id", "full_name", "division", "department", "salary", "total_comp", "salary_z", "totalcomp_z"]
     ].sort_values("salary_z", key=lambda s: s.abs(), ascending=False)
+
     st.write("Extreme values (|z| ≥ 2.5):")
     st.dataframe(outliers, use_container_width=True, hide_index=True)
 
